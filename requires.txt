@@ -1,0 +1,29 @@
+openai>=1.30.0
+pyautogui>=0.9.54
+pillow>=10.0.0
+pyyaml>=6.0
+requests>=2.31.0
+urllib3<3,>=1.26
+pycryptodome>=3.20
+
+[dev]
+pytest>=7.4
+ruff>=0.4.0
+
+[mac]
+
+[mac:sys_platform == "darwin"]
+pyobjc-framework-Cocoa>=10.0
+pyobjc-framework-Quartz>=10.0
+pyobjc-framework-ApplicationServices>=10.0
+
+[tray]
+
+[tray:sys_platform == "win32"]
+uiautomation>=2.0
+
+[windows]
+pygetwindow>=0.0.9
+
+[windows:sys_platform == "win32"]
+pywin32>=306

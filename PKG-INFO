@@ -1,0 +1,497 @@
+Metadata-Version: 2.4
+Name: dlp-auto
+Version: 0.1.0.dev0
+Summary: AI-powered DLP automated testing agent (UI-TARS / OSWorld inspired, Doubao via Volcano Ark).
+Author: DLP Auto
+License: Proprietary
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: openai>=1.30.0
+Requires-Dist: pyautogui>=0.9.54
+Requires-Dist: pillow>=10.0.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: requests>=2.31.0
+Requires-Dist: urllib3<3,>=1.26
+Requires-Dist: pycryptodome>=3.20
+Provides-Extra: mac
+Requires-Dist: pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin" and extra == "mac"
+Requires-Dist: pyobjc-framework-Quartz>=10.0; sys_platform == "darwin" and extra == "mac"
+Requires-Dist: pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin" and extra == "mac"
+Provides-Extra: windows
+Requires-Dist: pywin32>=306; sys_platform == "win32" and extra == "windows"
+Requires-Dist: pygetwindow>=0.0.9; extra == "windows"
+Provides-Extra: tray
+Requires-Dist: uiautomation>=2.0; sys_platform == "win32" and extra == "tray"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: ruff>=0.4.0; extra == "dev"
+
+# dlp-auto
+
+AI 驱动的 DLP（飞连）自动化测试 Agent。
+
+> 当前架构事实见 [docs/tech_design.md](docs/tech_design.md)。历史草案已归档，不作为运行依据。
+
+## 目录
+
+```
+dlp_auto/        框架核心代码
+  core/          截图 / 解析 / 执行 / Agent 主循环 / Judge 验收 / 反哺
+  llm/           LLM Provider（火山方舟豆包）+ prompts
+  actions/       跨平台硬动作 facade（_mac / _windows / _common；_windows/tray.py 为可选托盘唤窗，默认关）
+  case/          case 装饰器(spec) / 加载(loader) / 执行(runner)
+  verify/        case/run 级多路验收与结果聚合
+  report/        CSV 报告与分组通过率
+  regression/    独立数据安全回归 registry / runner / 断言 / 本地报告
+  provision/     环境就绪探测（catalog / provisioner，默认关、可整体删除）
+  human/         需人工介入时的多渠道 resume（预留）
+  notify/        消息推送 dispatcher（飞书 / webhook，预留）
+cases/           业务用例（按 DLP 后台分级：desktop_app/web/peripheral）
+  desktop_app/im/{mac,windows}/  桌面 IM
+  desktop_app/ai_chat/windows/   Windows AI应用
+  web/other/mac/                 macOS 通用网站/协议测试（当前 DLPTest）
+  web/other/windows/             Windows 通用网站/协议测试（当前 DLPTest）
+  regression/                    独立数据安全回归（不进入主 run / 覆盖率同步）
+  .hints/        反哺沉淀的可复用经验（按 case_id）
+config/          配置目录（所有 yaml 统一收拢于此）
+  config.yaml            默认配置（不含密钥，入库）
+  config.secret.yaml     大模型密钥/接入点 + 服务端凭据（gitignore，不入库）
+  apps.yaml             应用清单（provision 用，入库）
+  contacts.yaml         外发联系人/群（gitignore，不入库）
+  *.example.yaml        上述 secret/contacts 的模板（入库，供复制）
+docs/            架构文档 + 阶段计划（archive/ 为已完成使命的归档稿，只读）
+reports/         运行产生的 CSV 测试报告
+screenshots/     --debug-shots 时每步截图
+```
+
+## 快速开始
+
+依赖清单的唯一权威来源是 [`pyproject.toml`](pyproject.toml)（用 `optional-dependencies` + `sys_platform`
+标记区分平台）；**新机器无需额外 requirements 文件**——按下方选对本平台的 extras，一条 `pip install -e`
+即可装全（base 依赖 + 平台专属包）。
+
+**macOS / Linux：**
+
+```bash
+# 1) 创建虚拟环境并安装依赖（mac 平台 extras）
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,mac]"
+
+# 2) 配置大模型接入点（合规：密钥不入库）
+#    复制模板后填写 api_key / model(接入点) / base_url
+cp config/config.secret.example.yaml config/config.secret.yaml
+$EDITOR config/config.secret.yaml
+
+# 3) 运行 case（示例：只跑拖拽外发，并每步落盘截图）
+python3 -m dlp_auto.run run --filter drag_drop --debug-shots
+```
+
+> **Mac 真机 DLP 验收前置**（仅当要校验 DLP 客户端日志时需要；只跑 GUI 动作可跳过）：
+> 1. 本机需已安装 **CorpLink / 飞连 DLP 客户端**，否则日志 `/Library/CorpLink/logs/edlp.log` 不存在。
+> 2. 该日志由 root 持有，自动化用 `sudo -n cat` 读取——需先 `sudo -v` 或配好 sudoers 免密规则，
+>    否则日志验收失败（解密器 `bread` 已随仓库入库，无需另配）。
+> 3. 另两个 secret 按需创建（同为 `.gitignore`，仅提交模板）：`config/apps.secret.yaml`
+>    （app 升级为自动登录时）、`config/contacts.yaml`（跑需选联系人/群的外发 case 时）。
+
+**Windows（PowerShell）：**
+
+```powershell
+# 1) 创建虚拟环境并安装依赖（windows 平台 extras）
+py -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -e ".[dev,windows]"          # 需 IM 托盘挂机唤窗能力则用 ".[dev,windows,tray]"
+
+# 2) 配置大模型接入点（合规：密钥不入库）
+copy config\config.secret.example.yaml config\config.secret.yaml
+notepad config\config.secret.yaml
+
+# 3) 运行 case（真机 GUI 建议用独立窗口跑规避双发，见后文「Windows 真机 GUI case」）
+.\scripts\run_case.ps1 -Filter drag_drop -DebugShots
+```
+
+> 可选 extras：`tray`（Windows IM 托盘挂机唤窗，默认关、可整体删除）、`dev`（pytest / ruff）。
+> 配置优先级：环境变量 > `config/config.secret.yaml` > `config/config.yaml` > 代码内默认值。
+> `config/config.secret.yaml` 已加入 `.gitignore`，请勿提交密钥。
+
+## 运行 case
+
+命令格式：
+
+```bash
+python3 -m dlp_auto.run [--config <路径>] run [cases_dir] [可选参数]
+```
+
+### 参数说明
+
+| 参数 | 作用 | 默认值 | 填写示例 |
+|------|------|--------|----------|
+| `--config <路径>` | 配置文件路径（注意：在 `run` **之前**） | `config/config.yaml` | `--config config/config.yaml` |
+| `cases_dir` | case 目录（位置参数） | `cases` | `cases/desktop_app/im/mac` |
+| `--filter <子串>` | 只跑 id 含该子串的 case | 无（全跑） | `--filter feishu` |
+| `--debug-shots` | 每步截图落盘到 `screenshots/`，便于排查 | 关闭 | `--debug-shots` |
+| `--report-dir <目录>` | CSV 报告输出目录 | `reports` | `--report-dir out/reports` |
+| `--log-dir <目录>` | 运行日志落盘目录 | `logs` | `--log-dir out/logs` |
+| `--no-log-file` | 不落盘日志，仅打印到终端 | 默认落盘 | `--no-log-file` |
+| `--no-lock` | 关闭 run 单实例互斥锁；真机 GUI 通常不应关闭 | 默认启用互斥锁 | `--no-lock` |
+| `--lark-base` | 运行结束后用 `lark-cli` **新建多维表格**，写入本次全部 case 结果，并上传每个 case 的末步截图 | 关闭 | `--lark-base` |
+| `--check-log` | **兼容旧脚本的从属参数**；不再控制日志校验。传 `--policy audit/block` 会自动启用本地日志校验，`policy=none` 时本参数被忽略 | 兼容参数，无需传 | `--check-log` |
+| `--check-server` | 启用 **服务端事件上报回查**验收（**run 级**：所有 case 跑完后按本地日志解析出的**事件 UUID 精确回查**飞连后台；需配 `--policy audit/block`） | 关闭 | `--check-server --policy audit` |
+| `--policy <audit\|block>` | 声明本次运行的 DLP **预期策略**，自动启用客户端本地日志校验，并执行策略感知聚合（`外发结果 × 日志`交叉验证） | 不传=`none`（逐字节零回归） | `--policy block` |
+| `--ensure-ready` | 启用 app 级环境就绪探测；按 `config/apps.yaml` 检查安装/登录，未就绪则跳过该 app | 关闭 | `--ensure-ready` |
+| `--scan-unexpected-events` | 启用**旁路 run 级 DLP 事件审计**：主报告落盘后，全量扫描本次时间窗内的 DLP 客户端日志事件，用「预期事件台账」反筛出无任何 case 能解释的**疑似误报**，单独输出 JSON/CSV 诊断产物。**纯旁路**——不改任何 case 结论/退出码；默认关，关时逐字节零回归 | 关闭 | `--scan-unexpected-events` |
+| `--reflect` | **强制全局开启**反哺（覆盖各 case 声明） | 不传=跟随 case | `--reflect` |
+| `--no-reflect` | **强制全局关闭**反哺（覆盖各 case 声明） | 不传=跟随 case | `--no-reflect` |
+
+> 策略断言 `--policy`：**不传** = `none`，聚合逐字节回退现状（不做策略判定）；`audit` = 预期外发成功且留审计日志；
+> `block` = 预期文件被拦截。取值优先级 **`--policy` > config `verify.policy` > 默认 `none`**（CLI 只收 audit/block，
+> config 可写 none/audit/block，非法值直接报错）。`audit/block` 都会自动挂载客户端本地日志 checker，
+> **无需再传 `--check-log`**；该兼容参数既不能在 `policy=none` 时单独开启日志校验，也不能关闭策略自动启用的日志校验。
+> 详见 [docs/dlp_policy_assertion_design.md](docs/dlp_policy_assertion_design.md)。
+
+> 反哺开关三态：不传 `--reflect/--no-reflect` 时**跟随各 case 的 `reflect=` 声明**；
+> 传 `--reflect` 全开、`--no-reflect` 全关。二者互斥不可同传。
+
+常用示例：
+
+```bash
+# 跑全部 case
+python3 -m dlp_auto.run run
+
+# 只跑某个 app / 某个动作的 case
+python3 -m dlp_auto.run run --filter feishu
+
+# Windows：跑谷歌浏览器 DLPTest 的拖拽 + 点击上传（真机代跑请用下方 ps1）
+python -m dlp_auto.run run --filter web.other.chrome.dlptest_https_post
+
+# 调试单个目录、每步留图，并强制开启反哺打磨
+python3 -m dlp_auto.run run cases/desktop_app/im/mac --filter drag_drop --debug-shots --reflect
+
+# 跑完把结果 + 末步截图同步到飞书多维表格（需先 lark-cli auth login）
+python3 -m dlp_auto.run run --filter feishu --lark-base
+
+# 审计策略自动启用本地日志检索；额外开启服务端事件回查
+python3 -m dlp_auto.run run --filter feishu --policy audit --check-server
+
+# 阻断策略断言：自动启用本地日志检索，预期文件被拦截
+python3 -m dlp_auto.run run --filter feishu --policy block
+
+# 单条自然语言指令的最小闭环（不走 case）
+python3 -m dlp_auto.run agent_demo --instruction "打开飞书并搜索张三"
+```
+
+退出码：全部通过返回 `0`；有 case 失败/报错返回 `1`；配置或 LLM 接入点无效返回 `2`；
+单实例锁检测到已有 run、当前进程未执行任何 case 时返回 `3`。
+
+### Windows 真机 GUI case：用独立窗口跑（`scripts/`）
+
+真机 GUI case 会抢占前台窗口与鼠标。在 Windows 上，若通过 AI 助手/某些终端封装间接调用
+`run`，可能因调用层「等不到返回就自动重试」而**双发**（同一命令起两个进程并发抢窗口，互相
+搅乱截图）。为此提供两个 PowerShell 脚本，把 run 放到**独立窗口**里跑，从源头规避：
+
+```powershell
+# 新开一个独立 PowerShell 窗口运行指定 case（本终端毫秒级返回、不阻塞、不会触发重试）
+.\scripts\run_case.ps1 -Filter qq.outbound_file.drag_drop
+# 需要每步落盘截图时加 -DebugShots
+.\scripts\run_case.ps1 -Filter qq.outbound_screenshot.builtin_capture -DebugShots
+
+# 监听上面启动的窗口：run 一结束就返回，并默认自动关闭该窗口（-KeepWindow 可保留）
+.\scripts\wait_run.ps1
+```
+
+- `run_case.ps1` 用 `Start-Process` 新开窗口、立即返回；run 在窗口内独立进行，脱离调用方沙箱。
+- `wait_run.ps1` 以「日志写出结尾汇总」为主判据、「子进程消失」为兜底，run 结束即返回。
+- 直接手动敲 `python -m dlp_auto.run run ...` 同样可用；上述脚本主要解决**AI 助手代跑**时的双发。
+- 框架侧另有单实例互斥锁（`--no-lock` 可关）作并发防呆，详见 [LESSONS.md](LESSONS.md) #5/#7。
+
+### Windows Lark IM 外发
+
+`cases/desktop_app/im/windows/case_lark.py` 覆盖拖拽、对话框上传、复制粘贴和自带截图四类，
+统一外发到 `contacts.yaml` 配置的群聊（默认“DLP测试”）。海外版 Lark 与国内飞书严格按
+`Lark.exe` / `Feishu.exe` 分开识别，托盘唤醒也只匹配各自产品名，支持两款客户端同时运行。
+
+### Windows 阿里旺旺图片外发
+
+`cases/desktop_app/im/windows/case_aliww.py` 覆盖拖拽、对话框上传、复制粘贴和自带截图四类
+外发（阿里旺旺只支持图片）。逐动作行为约定、以及托盘 Name 只有淘宝账号串时的
+`tray_hints` 配置见 [用例说明/Windows-IM外发.md](docs/用例说明/Windows-IM外发.md)。
+
+真机运行仍使用独立窗口：
+
+```powershell
+.\scripts\run_case.ps1 -Filter aliww.outbound_image.upload -DebugShots -Policy audit
+.\scripts\wait_run.ps1
+```
+
+### Windows AI应用外发（千问 / 元宝 / Kimi / Poe）
+
+`cases/desktop_app/ai_chat/windows/case_<app>.py` 走独立的 `desktop_app.ai_chat` 通道，
+已适配千问 / 元宝 / Kimi / Poe 四款。各款覆盖动作、逐动作行为约定（发送前状态、发送方式、
+视觉验收口径等）见 [用例说明/Windows-AI应用外发.md](docs/用例说明/Windows-AI应用外发.md)。
+
+```powershell
+# 仅验证 GUI 动作，不声明 DLP 策略（把 qianwen 换成 yuanbao / kimi 即可）
+.\scripts\run_case.ps1 -Filter desktop_app.ai_chat.qianwen -DebugShots
+.\scripts\wait_run.ps1
+```
+
+不传 `-Policy` 时不启用客户端日志或服务端控制面验收。即使 GUI/视觉动作成功，最终 DLP
+结论仍是 `inconclusive`，不能描述为生产策略通过。
+
+### Windows app 收尾策略
+
+`config/config.yaml` 的 `teardown.apps` 按报告软件名覆盖默认收尾动作。当前千问显式使用
+`close`，一组 case 跑完后关闭主窗并保留托盘进程与登录态；WeLink 使用 `quit`，关闭窗口后
+继续结束其已核实安装根目录下的所有残留进程（包括无窗口守护进程，会丢失登录态）。WeLink
+因此每次 run 都会冷启动；`scripts/run_case.ps1` 的父进程先以 `Start-Process -PassThru`
+拉起客户端并保活检查 4 秒，再创建独立 run 窗口，不依赖托盘恢复。
+
+### Windows 浏览器通道
+
+当前 `cases/web/other/windows/` 已接入 Edge、谷歌、360 极速、Firefox、2345、360 安全、
+猎豹、傲游、QQ、搜狗的 DLPTest HTTPS POST（世界之窗因页面/UI 异常本期跳过）。各浏览器
+`drag_drop` / `click_upload` 的逐动作行为约定见
+[用例说明/Windows-浏览器外发.md](docs/用例说明/Windows-浏览器外发.md)。
+
+```powershell
+# 适配/验收默认使用 audit，它会自动启用客户端日志校验；本期不启用服务端回查
+.\scripts\run_case.ps1 -Filter web.other.firefox.dlptest_https_post -DebugShots -Policy audit
+.\scripts\wait_run.ps1
+
+# 仅调试页面流程时才省略 -Policy audit；此时最终 DLP 结论为 inconclusive
+```
+
+浏览器站点 URL、exe 与独立实例协议统一从 `config/config.yaml` 的 `web` 段读取。
+Chrome 使用 `managed_session`，只关闭本次新增窗口/PID 树，不影响用户原窗口；其余已接入
+浏览器使用 `all_under_roots`，冷启动前和组结束后按配置的安装安全根目录清零进程。
+临时 profile、上传目录和本 case 资源管理器也会清理。
+
+完整方案与真机验证证据见 [docs/browser_channel_design.md](docs/archive/browser_channel_design.md)（CHG-014，已归档）。
+
+### macOS 浏览器通道
+
+`cases/web/other/mac/` 已接入 Safari、谷歌、Edge、Firefox、360 极速的 DLPTest HTTPS POST，
+每款包含拖拽与点击上传。每条 case 都新开受管窗口；Chromium/Firefox 使用独立 profile，
+Safari 按 window id 精确跟踪，cleanup 只关闭本 case 窗口和临时资源，不触碰用户原窗口。
+逐动作约定与真机结果见
+[用例说明/Mac-浏览器外发.md](docs/用例说明/Mac-浏览器外发.md)。
+
+```bash
+# 在独立 Terminal.app 窗口运行五款浏览器的全部 10 条 case
+./scripts/run_case_mac.sh --cases-dir cases/web/other/mac --debug-shots --no-reflect
+
+# 按浏览器或动作过滤
+./scripts/run_case_mac.sh --cases-dir cases/web/other/mac \
+  --filter web.other.firefox.dlptest_https_post.click_upload --debug-shots
+```
+
+地址栏 URL 从 `config.web.sites` 读取后整段粘贴，不逐字符输入。点击上传会为每条 case
+生成独占目录和唯一文件名，通过 macOS“前往文件夹”粘贴完整路径，再用两次原生 Return
+完成定位与打开。Submit 最多允许一次未命中纠正；请求结果出现后禁止重复提交。不传
+`--policy` 时只验证 GUI/视觉流程，最终 DLP 结论按设计为 `inconclusive`。
+
+## 数据安全回归 case
+
+`cases/regression/` 使用独立入口、registry、runner、断言和本地报告，不进入通道覆盖主线的
+`CaseRunner`、CSV、`--lark-base` 或固定覆盖率清单。Case 清单、步骤与断言见
+[数据安全回归自动化清单](docs/regression_case_analysis/AUTOMATION_CASES.md)。所有管理后台
+回归共用 `regression.admin.base_url` 和 secret 中的 `regression.admin` UI 管理员凭据；
+各能力只配置自己的页面路径和业务值。UI 凭据与 `verify.server` API 凭据保持隔离，敏感值
+仅由 hard step 注入。
+Mac 真机使用独立 Terminal 窗口：
+
+```bash
+./scripts/run_regression_mac.sh \
+  --filter regression.screen_watermark.create_preview_save \
+  --debug-shots
+```
+
+回归 case 同样支持 `--reflect` / `--no-reflect` 三态；不传时跟随各
+`RegressionCaseSpec.reflect`。回归 hints 独立落到
+`cases/.hints/regression/<能力域>/<platform>/`，不会读写通道 case 的 hints。
+同一次回归 run 内，管理后台 case 复用一个受管 Chrome 窗口和登录态；单条 case 结束不关闭，
+run 结束统一关闭。调试时追加 `--keep-browser-open` 可保留窗口供人工查看，但下一个 run
+仍会创建新的独立会话，不跨 run 复用。
+
+产物只写入 `reports/regression/<run_id>/`：`report.html`、`summary.json`、
+增量 `results.jsonl`、断言截图和 `run.log`。
+
+## 运行产物（日志 / 截图 / 报告）
+
+| 产物 | 位置 | 说明 |
+|------|------|------|
+| **运行日志** | `logs/run_<时间戳>.log`（同时上屏） | 默认落盘；含每步 action、**每次模型原始返回**、验收结论、token 消耗。加 `--no-log-file` 仅上屏 |
+| 每步截图 | `screenshots/step_NNN.png` | 仅在加 `--debug-shots` 时生成；验收对比图为 `*_after.png` |
+| CSV 测试报告 | `reports/<run_id>.csv` | 列含：软件 / 测试场景 / 具体外发动作 / case_id / 平台 / **最终结论 / 预期策略 / 执行结果 / 外发结果 / DLP验收结论** / 视觉判定 / 日志判定 / 服务端判定 / 问题描述 / 耗时(ms) / **Token消耗** / 测试截图。其中**预期策略**（未指定/审计/阻断）来自 `--policy`；**外发结果**（已发出/被拦截/未知）是「文件实际发没发出去」，与执行结果**解耦**——阻断生效时执行虽成功，外发结果记「被拦截」。耗时与 Token 均为**单 case** 值（Token 按 case 边界对 provider 累计量取差值归属，含 Agent 决策 + Judge 验收）。**增量落盘**：每跑完一个 case 立即追加一行并 flush；run_id 使用 UTC 微秒 + PID + 随机后缀，避免并发覆盖 |
+| 反哺经验（hints） | `cases/.hints/<channel>/<platform>/<case>.yaml` | 成功轨迹沉淀的可复用经验，按通道与平台隔离，下次同 step 自动注入 |
+| 反哺复盘报告 | `.tmp/reflect_report.md` | 供人工 review 的指令改写建议（不自动改源码） |
+| 末步截图 | `screenshots/final/<run_id>/<case_id>.png` | 仅在加 `--lark-base` 时生成；每个 case 在 cleanup 前对末步界面截图，用于上传多维表格。按 run_id 隔离目录，避免跨运行覆盖 |
+| DLP 事件审计台账 | `reports/<run_id>_dlp_event_audit.json` | 仅在加 `--scan-unexpected-events` 时生成；含 run 四个时间点、扫描状态（`completed`/`inconclusive`+原因）、全部事件及其分类（`expected`/`expected_retry`/`ambiguous`/`unexpected`）与汇总计数。纯旁路诊断，不影响任何 case 结论 |
+| 疑似误报清单 | `reports/<run_id>_unexpected_dlp_events.csv` | 仅在加 `--scan-unexpected-events` 时生成；只输出 `ambiguous + unexpected` 事件（无任何 case 能解释的疑似误报），列含事件时间/UUID/进程/文件名/原始路径/分类/分类原因/当时执行的 case/最近 case/原始日志摘要，供人工复核 |
+| 飞书多维表格 | 每次运行**新建一张**（表名含 run_id） | 仅在加 `--lark-base` 时生成；写入全部 case 结果 + 末步截图，控制台打印 Base 链接 |
+
+> 日志会记录三处模型返回：Agent 决策（`===== STEP n =====`）、Judge 验收（`🔎 验收模型返回`）、反哺（`🧠 反哺模型返回`）。
+
+## 结果同步飞书多维表格（`--lark-base`）
+
+加 `--lark-base` 后，本次运行结束会自动：
+
+1. **新建**一张飞书多维表格（表名 `DLP自动化测试 <run_id>`，每次运行独立一张）；
+2. 批量写入全部 case 结果（含最终结论 / 执行结果 / DLP 验收结论）；
+3. 把每个 case 的**末步截图**上传到对应记录的「末步截图」附件列；
+4. 控制台打印可点击的 Base 链接。
+
+前置条件：
+
+- 本机已安装并登录 [lark-cli](https://code.byted.org/)（`lark-cli auth status` 显示 ready）。
+  `@larksuite/cli` 为**字节内部** npm 包，新机器需先装 Node 并把 npm registry 指向内部源，再依次：
+
+  ```bash
+  npm install -g @larksuite/cli                          # 装 lark-cli
+  npx skills add https://github.com/larksuite/cli -y -g  # 装配套技能
+  # 再按 CLI 引导完成 auth login / 应用配置
+  ```
+
+  上述命令依赖字节内部工具链，可能随其更新变化，以 lark-cli 官方引导为准。
+- 该开关关闭时（默认）完全不触碰网络，也不生成 `screenshots/final/` 截图。
+
+> 实现走 `report/hook.py` 的 `ReportHook` 扩展点（见 `report/lark_base_hook.py`），
+> 任一步失败只打印告警、不影响 case 运行结果与本地 CSV 报告。
+> 注意：`lark-cli` 上传附件要求相对路径，故末步截图统一落在项目内 `screenshots/final/`。
+
+## 仓库覆盖清单同步（`sync-case-coverage`）
+
+固定覆盖清单：[DLP 自动化覆盖清单](https://bytedance.larkoffice.com/base/AEOmbtgJiaUDPdsgbACcrTAynie)。
+它与 `--lark-base` 的单次运行结果表分开维护，包含：
+
+- `Case 覆盖明细`：软件名称、通道、场景名称、具体动作、已覆盖端、源码路径等；
+- `软件覆盖总览`：按软件汇总 Windows/Mac 覆盖端、case 数量、场景和动作；
+- `飞连支持目录`：从 `cloud-config/app_v5.yaml` 显式刷新，作为完整支持范围分母；
+  每行是一条软件×端记录，`统计单位` 固定为 1；
+- `覆盖率指标`与`DLP 自动化覆盖率`仪表盘：指标卡展示软件、软件×端及 Windows/Mac
+  覆盖率；综合、Windows、Mac 三张通道图直接基于“飞连支持目录”，按
+  `通道名称 × 映射状态` 堆积 `SUM(统计单位)`。点击“已覆盖/未覆盖”色块可查看对应的
+  软件、App Key、平台、Case 数、覆盖场景和动作明细。
+
+新增 case 后，先预检差异，再补录：
+
+```bash
+python3 .trae/skills/sync-case-coverage/scripts/sync.py
+python3 .trae/skills/sync-case-coverage/scripts/sync.py --apply
+```
+
+Case 记录以 `<case_id>@<platform>` 为唯一键，只补缺失、不覆盖已有记录、不自动删除历史记录；
+日常同步不会访问远端，软件总览和覆盖率会基于 Base 中已有的飞连目录刷新。
+需要更新飞连完整支持基线时单独执行：
+
+```bash
+python3 .trae/skills/sync-case-coverage/scripts/sync.py --refresh-catalog
+python3 .trae/skills/sync-case-coverage/scripts/sync.py --refresh-catalog --apply
+```
+
+覆盖率只统计“正式且 `app/scenario/action` 元数据完整”的 Case；完整规则见
+[sync-case-coverage skill](.trae/skills/sync-case-coverage/SKILL.md)。
+
+**当前快照（2026-08-21，日常同步后）**：
+
+- 仓库/Base：86 条平台注册记录，仓库遗漏 0；
+- 软件覆盖：23/168（13.69%）；
+- 软件×端覆盖：29/270（10.74%）；
+- Windows：22/132（16.67%）；
+- Mac：7/138（5.07%）。
+
+本次新增 Safari、谷歌、Edge、Firefox、360 极速共 10 条 Mac 浏览器记录。两条既存飞书
+冒烟 case 的 `app/scenario/action` 元数据不完整，仍如实保留为“不完整”，未从名称猜测补值。
+
+## 三路验收（视觉 / 日志 / 服务端）
+
+对「外发是否真的被 DLP 拦截/上报」这一结论，框架支持**三路独立验收**，各自结论在 CSV 里
+**各占一列**（视觉判定 / 日志判定 / 服务端判定），最终 case 结果按策略聚合：
+
+| 路 | 粒度 | 触发时机 | 开关 | 说明 |
+|----|------|----------|------|------|
+| ① 视觉（大模型） | 每个 ai step | agent 自报 finished 时对比 before/after | **始终启用** | 动作执行证据；不单独证明 DLP 控制有效 |
+| ② DLP 客户端日志 | 每个 case | case 动作跑完后检索 | `--policy audit/block` 自动启用 | 在「本 case 执行期间新增的日志」里匹配期望特征；`--check-log` 仅兼容旧脚本 |
+| ③ 服务端事件上报 | **整个 run** | 全部 case 跑完后按 **event_id 批量回查一次**并回填（缺的全局补查一次） | `--check-server`（且 policy≠none） | 按本地日志解析出的事件 UUID 精确查飞连后台；命中后校验「恰好一条 + 处置动作 vs policy」（见下） |
+
+**单路结论**有四态：`通过 / 不通过 / 未判定(inconclusive) / 未启用(skipped)`。
+**聚合语义**取决于 `--policy`——执行结果与 DLP 验收结论始终分开记录，执行失败/异常直接失败：
+
+- **`none`（默认，不传 `--policy`）**：逐字节回退现状——执行成功后，所有已启用的日志/服务端 checker
+  都通过才最终通过；任一不通过则失败；未启用、未判定或 mock 均得「未判定」，不会显示「没有发现问题」。
+- **`audit`（预期外发成功）**：先看**外发结果**——`被拦截`判失败（审计不该被拦）、`未知`判未判定；
+  `已发出`时再与日志/服务端走上面同一「全过才通过」AND 门。
+- **`block`（预期被拦截）**：**外发结果 `已发出` = 阻断失效 = 泄露，直接失败**（日志无翻案权，哪怕留了阻断日志）；
+  `被拦截` 时再看阻断类日志——命中阻断类日志才通过，命中的却是审计类判失败，无阻断日志则「未判定」（缺铁证不冤枉判失败）；
+  外发结果 `未知` 判「未判定」。
+
+> 日志「分型」：`_legacy` 明文后端会按策略选用 `*_block_*` / `*_audit_*` 特征；
+> Windows/Mac 加密日志后端只使用已标定的真实事件字段。Mac 当前样本只证明
+> `dlp audit event`：audit 命中可通过；block 命中只回填 eventId，本地日志仍记
+> 「未判定」，不会把未标定的 `leakFileActions` 猜成阻断铁证。判定表全表见
+> [dlp_policy_assertion_design.md §4.3](docs/dlp_policy_assertion_design.md)。
+> 本地日志路与策略绑定：`policy=none` 时不挂载，`audit/block` 时自动挂载，没有独立关闭开关。
+> 服务端路仍由 `--check-server` 选择是否启用；未启用的验收路不能返回假「通过」。
+
+**块③ 服务端回查的命中裁决**（`--check-server` + `--policy audit/block` 时生效）：按本地日志解析出的事件 UUID 精确查飞连后台后——
+
+- **查到 0 条** → `未判定`：可能上报延迟或未上报，不臆测（绝不判通过）；
+- **查到 >1 条** → `不通过`：event_id 是 UUID 本应唯一，多条即异常，条数与原因落「问题描述」列；
+- **恰好 1 条** → 读该事件 `event_result.intercept`（为真=拦截，缺失/非真=放行）与 `--policy` 交叉校验：
+  `audit` 应放行（放行=通过、被拦截=不通过）；`block` 应拦截（拦截=通过、放行=不通过=阻断失效）；
+- **取不到 `event_result`** → `未判定`（不臆测）。
+
+> 鉴权二选一，**cookie 优先、账号密码回退**（都放 `config.secret.yaml`，绝不入库）：①会话直传
+> `session_cookie` + `csrf_token`（推荐，跳过登录、不必存长期明文密码）；②管理员 `admin_user` +
+> `admin_pwd`（AES 登录回退）。都没配则该路记「未判定」并提示补哪项。
+
+配置（`config.yaml`，均为可选；不配则该路记 `未判定` 并在日志提示补哪些字段）：
+
+```yaml
+verify:
+  policy: none                 # 预期策略 none/audit/block（可被 --policy 覆盖；非法值报错）
+  dlp_log:                     # 块② DLP 客户端日志检索（--policy audit/block 自动启用）
+    windows:
+      path: ${LOCALAPPDATA}\corplink-ow\logs\ow_system.log
+      decoder: win-corplink-log-decode.exe
+      event_marker: "dlp_event_upload_handler.cpp"
+      image_exts: [".png", ".jpg", ".jpeg", ".bmp", ".gif"]
+    mac:
+      path: /Library/CorpLink/logs/edlp.log
+      decoder: bread
+      use_sudo: true
+      event_category: "EDLP:DLP"
+      event_marker: "dlp audit event:"
+      image_exts: [".png", ".jpg", ".jpeg", ".bmp", ".gif"]
+  server:                      # 块③ 服务端事件回查（--check-server 且 policy≠none）
+    mock: false                # 默认 false 走真实回查；true 只验证编排链路、恒记未判定（不伪造通过）
+    report_delay_sec: 60       # 某事件首次没查到时，全局等待一次的上报周期（秒）
+    query_window_days: 1       # 按 event_id 查询时 start/end 时间窗兜底（天）
+    host: feilian-autotest.ifeilian.cn   # 目标环境域名
+    admin_port: 8443           # 查询接口端口（/api/admin/v2/dynamic_security/edlp/events）
+    portal_port: 10443         # 登录接口端口（/api/v1/login，仅账号密码回退时用）
+    timeout_sec: 10
+    # 凭据（session_cookie/csrf_token 或 admin_user/admin_pwd）放 config.secret.yaml，绝不入库
+```
+
+> 严格「零猜测」：DLP 日志路径与匹配特征、服务端接口/凭据**只从配置读取，绝不臆测**。
+> Mac 日志由 root 持有。推荐用下面的脚本安装一条精确 sudoers 规则；自动化只执行
+> `sudo -n cat <日志> | bread -`，不接收密码、不让仓库二进制以 root 运行、不落明文文件：
+>
+> ```bash
+> scripts/setup_mac_dlp_log_sudo.sh          # 预览规则
+> scripts/setup_mac_dlp_log_sudo.sh --apply  # visudo 校验、安装并端到端验证
+> scripts/setup_mac_dlp_log_sudo.sh --check  # 不输出日志正文，只报告解密事件数
+> scripts/setup_mac_dlp_log_sudo.sh --remove # 撤销
+> ```
+>
+> 不安装长期规则时，也可在每次 run 前手工执行 `sudo -v` 做临时授权。
+> 块③ 已接入飞连后台真实接口（`feilian_client.py`）：按块② 解密日志解析出的**事件 UUID** 精确回查，
+> 命中后校验「恰好一条 + 处置动作 vs policy」；`event_id` 是块②→块③ 唯一耦合缝，`check_run` 只认它。
+> 真机验证证据见归档稿 [server_event_requery_design.md](docs/archive/server_event_requery_design.md)（CHG-004）。
+
+## 设计要点速览
+
+- 双 LLM 接入点：`llm.default` 兼任 Agent 决策与兜底 Judge；`llm.judge` 可独立配置以减少自评偏差。
+- 平台：自动探测 + `config.platform.override` 可强制；Mac / Windows 双机器同仓库独立运行。
+- `need_human()` 完全可选；case 不调用则 `human/` 与任何 resume 渠道都不会被实例化。
+- Notify（push）与 Human（resume）解耦，Human Resolver 支持多渠道并行 first-win。
+- 报告默认输出 CSV（软件 × 场景 × 外发动作 维度）；通过 `report/hook.py` 扩展 HTML / 飞书消息卡片。
